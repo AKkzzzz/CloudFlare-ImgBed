@@ -1,3 +1,4 @@
+import { validateSession } from '../utils/auth/sessionManager.js';
 import { errorHandling, telemetryData, checkDatabaseConfig } from '../utils/middleware';
 
 // CORS 跨域响应头
@@ -19,4 +20,8 @@ async function handleOptions(context) {
     return context.next();
 }
 
-export const onRequest = [checkDatabaseConfig, handleOptions, errorHandling, telemetryData];
+async function requireForumOrAdmin(context) {
+  if (!(await validateSession(context.env, context.request, 'admin')).valid) return new Response('Please upload through Lighthouse', {status:401,headers:{...corsHeaders,'Cache-Control':'no-store'}});
+  return context.next();
+}
+export const onRequest = [checkDatabaseConfig, handleOptions, errorHandling, requireForumOrAdmin, telemetryData];

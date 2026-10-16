@@ -77,7 +77,7 @@ export async function onRequest(context) {  // Contents of context object
 
 
 // 通用文件上传处理函数
-async function processFileUpload(context, formdata = null) {
+export async function processFileUpload(context, formdata = null) {
     const { request, url } = context;
 
     // 解析表单数据

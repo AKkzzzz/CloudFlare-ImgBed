@@ -1,0 +1,24 @@
+const {test}=require('node:test'),assert=require('node:assert/strict'),vm=require('node:vm'),fs=require('node:fs'),path=require('node:path'),{DatabaseSync}=require('node:sqlite'),{webcrypto}=require('node:crypto');
+async function harness(){
+ const store=new DatabaseSync(':memory:'),tickets=new Map();let uploads=0,block=null;const claims=[];
+ const db={prepare(sql){let values=[];return {bind(...v){values=v;return this},async run(){const r=store.prepare(sql).run(...values);return {meta:{changes:Number(r.changes)}}},async first(){return store.prepare(sql).get(...values)||null},async all(){return {results:store.prepare(sql).all(...values),meta:{size_after:4096}}}}}};
+ const ctx=vm.createContext({Request,Response,FormData,File,URL,URLSearchParams,Uint8Array,Date,Number,JSON,String,Math,Error,crypto:webcrypto,fetch:async(url,options)=>{const {ticket:t,claim}=JSON.parse(options.body);if(claim)claims.push(t);return tickets.has(t)?Response.json(tickets.get(t)):Response.json({error:'bad'}, {status:403})}});
+ const source=fs.readFileSync(path.join(__dirname,'../../functions/lighthouse/[[path]].js'),'utf8'),mod=new vm.SourceTextModule(source,{context:ctx});
+ const modules={
+  '../upload/index.js':{processFileUpload:async()=>{uploads++;if(block)await block;return Response.json([{src:'/file/test.png'}])}},
+  '../utils/sysConfig.js':{fetchUploadConfig:async()=>({}),fetchSecurityConfig:async()=>({})},
+  '../upload/uploadTools.js':{getUploadIp:()=> 'fixture',isBlockedUploadIp:async()=>false},
+  '../utils/indexManager.js':{getIndexMeta:async()=>({totalCount:1,totalSizeMB:1})}
+ };
+ await mod.link(async name=>{const exports=modules[name],stub=new vm.SyntheticModule(Object.keys(exports),function(){for(const [k,v]of Object.entries(exports))this.setExport(k,v)},{context:ctx});return stub;});await mod.evaluate();
+ const bytes=new Uint8Array(32);bytes.set([137,80,78,71]);const hash=Buffer.from(await webcrypto.subtle.digest('SHA-256',bytes)).toString('hex');
+ let count=0;function ticket(extra={}){const t=String(++count).padStart(43,'a');tickets.set(t,{jti:count.toString(16).padStart(32,'0'),sub:'b'.repeat(64),mode:'original',bytes:bytes.length,sha256:hash,mime:'image/png',origin:'https://cg.chenyifei.xyz',day:Math.floor((Date.now()/1000+28800)/86400),limit:4,exp:Math.floor(Date.now()/1000)+300,...extra});return t;}
+ async function upload(t,data=bytes){const f=new FormData();f.set('ticket',t);f.set('file',new File([data],'test.png',{type:'image/png'}));return mod.namespace.onRequest({request:new Request('https://wanxiangdengta.pages.dev/lighthouse/upload',{method:'POST',headers:{Origin:'https://cg.chenyifei.xyz'},body:f}),env:{img_d1:db}});}
+ return {db,store,ticket,upload,mod,bytes,claims,get uploads(){return uploads},setBlock:p=>block=p};
+}
+test('original cap is atomic; featured unlimited and same nonce is idempotent',async()=>{const h=await harness();try{for(let i=0;i<4;i++)assert.equal((await h.upload(h.ticket())).status,200);assert.equal((await h.upload(h.ticket())).status,429);for(let i=0;i<5;i++)assert.equal((await h.upload(h.ticket({limit:null}))).status,200);const t=h.ticket({limit:null});await h.upload(t);await h.upload(t);assert.equal(h.uploads,10);}finally{h.store.close()}});
+test('concurrent replay only invokes upstream once',async()=>{const h=await harness();let release;try{h.setBlock(new Promise(r=>release=r));const t=h.ticket(),first=h.upload(t);while(!h.uploads)await new Promise(r=>setImmediate(r));const second=await h.upload(t);assert.equal(second.status,409);release();assert.equal((await first).status,200);assert.equal(h.uploads,1);}finally{release?.();h.store.close()}});
+test('changed bytes, expired grant, wrong origin and forged token fail',async()=>{const h=await harness();try{const different=h.bytes.slice();different[20]=1;assert.equal((await h.upload(h.ticket(),different)).status,400);assert.equal((await h.upload(h.ticket({exp:1}))).status,403);assert.equal((await h.upload(h.ticket({origin:'https://other.test'}))).status,403);assert.equal((await h.upload('x'.repeat(43))).status,403);assert.equal(h.uploads,0);}finally{h.store.close()}});
+test('preflight returns an empty 204 response',async()=>{const h=await harness();try{const r=await h.mod.namespace.onRequest({request:new Request('https://wanxiangdengta.pages.dev/lighthouse/upload',{method:'OPTIONS'}),env:{img_d1:h.db}});assert.equal(r.status,204);assert.equal(await r.text(),'');}finally{h.store.close()}});
+
+test('invalid requests never claim daily reservations; valid upload claims once',async()=>{const h=await harness();try{const bad=h.bytes.slice();bad[20]=1;for(let i=0;i<4;i++)assert.equal((await h.upload(h.ticket(),bad)).status,400);assert.equal(h.claims.length,0);assert.equal((await h.upload(h.ticket())).status,200);assert.equal(h.claims.length,1);}finally{h.store.close()}});
