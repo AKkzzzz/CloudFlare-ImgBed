@@ -8,7 +8,7 @@ const MAX=10*1024*1024;
 const json=(out,status=200,origin='*')=>new Response(status===204?null:JSON.stringify(out),{status,headers:{'Content-Type':'application/json','Cache-Control':'no-store','Access-Control-Allow-Origin':origin,'Access-Control-Allow-Methods':'POST, OPTIONS','Access-Control-Allow-Headers':'Content-Type','Vary':'Origin'}});
 async function grant(ticket,claim=false,readonly=false){
  if(typeof ticket!=='string'||!/^[-\w]{40,60}$/.test(ticket))throw Error('上传票据无效');
- const r=await fetch(ISSUER,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ticket,claim,purpose:readonly?'status':'upload'}),redirect:'error'});
+ const r=await fetch(ISSUER,{method:'POST',headers:{'Content-Type':'application/json','User-Agent':'Mozilla/5.0 Lighthouse/1.0'},body:JSON.stringify({ticket,claim,purpose:readonly?'status':'upload'}),redirect:'error'});
  if(!r.ok)throw Error('票据已过期或账号没有上传资格');
  const g=await r.json();if(!/^[a-f0-9]{32}$/.test(g.jti)||!/^[a-f0-9]{64}$/.test(g.sub)||(!readonly&&(g.exp<Date.now()/1000||g.day!==Math.floor((Date.now()/1000+28800)/86400))))throw Error('票据已过期');
  return g;
@@ -37,17 +37,18 @@ export async function onRequest(context){
  const {request,env}=context,action=new URL(request.url).pathname.split('/').pop(),origin=request.headers.get('Origin')||'*';
  if(request.method==='OPTIONS')return json({},204,origin);
  if(request.method==='GET'&&action==='health')return json({version:'lighthouse-media-v1',d1:!!env.img_d1?.prepare});
+ if(request.method==='GET'&&action==='connectivity'){try{const r=await fetch(ISSUER,{method:'POST',headers:{'Content-Type':'application/json','User-Agent':'Mozilla/5.0 Lighthouse/1.0'},body:JSON.stringify({ticket:'0'.repeat(43)})}),type=r.headers.get('Content-Type')||'';return json({issuerStatus:r.status,issuerJson:type.includes('application/json'),d1:!!env.img_d1?.prepare});}catch{return json({issuerStatus:null,issuerJson:false,d1:!!env.img_d1?.prepare},503);}}
  if(request.method!=='POST')return json({error:'Method not allowed'},405,origin);
- let db,g;
+ let db,g,stage='request';
  try{
   if(action==='upload'){
-   const form=await boundedForm(request);g=await grant(form.get('ticket'));
+   const form=await boundedForm(request);stage='authorization';g=await grant(form.get('ticket'));
    if(origin!==g.origin||!['original','compressed'].includes(g.mode))return json({error:'上传来源无效'},403,origin);
    const file=form.get('file');if(!file||typeof file.arrayBuffer!=='function'||file.size!==g.bytes||file.size>(g.mode==='original'?MAX:200*1024))return json({error:'图片大小与票据不一致'},400,origin);
    const bytes=new Uint8Array(await file.arrayBuffer()),hash=[...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))].map(b=>b.toString(16).padStart(2,'0')).join('');
    if(hash!==g.sha256||!picture(bytes,g.mime))return json({error:'图片内容或校验值无效'},400,origin);
    if(await isBlockedUploadIp(env,getUploadIp(request)))return json({error:'此账号来源暂不可上传'},403,origin);
-   db=await database(env);
+   stage='database';db=await database(env);
    const saved=await db.prepare('SELECT state,result FROM lighthouse_uploads WHERE jti=?').bind(g.jti).first();
    if(saved)return saved.state==='done'?json(JSON.parse(saved.result),200,origin):json({error:'图片已处理或正在处理，请查询上传结果'},409,origin);
    const cap=g.mode==='original'?g.limit:null;
@@ -64,7 +65,7 @@ export async function onRequest(context){
     const out={state:'done',url:BASE+address.pathname,bytes:bytes.length,sha256:hash};await db.prepare("UPDATE lighthouse_uploads SET state='done',result=? WHERE jti=?").bind(JSON.stringify(out),g.jti).run();return json(out,200,origin);
    }catch(error){await db.prepare("UPDATE lighthouse_uploads SET state='failed' WHERE jti=?").bind(g.jti).run();return json({error:'图床暂时无法完成上传，请稍后再试'},502,origin);}
   }
-  const payload=await request.json();g=await grant(payload.ticket,false,action==='status');db=await database(env);
+  const payload=await request.json();stage='authorization';g=await grant(payload.ticket,false,action==='status');stage='database';db=await database(env);
   if(action==='status'&&g.mode!=='stats'){
    const row=await db.prepare('SELECT state,result FROM lighthouse_uploads WHERE jti=?').bind(g.jti).first();return json(row?.state==='done'?JSON.parse(row.result):{state:row?.state||'pending'},200,origin);
   }
@@ -73,5 +74,5 @@ export async function onRequest(context){
    return json({indexed:index?.success===true,files:index?.totalCount??null,sizeMB:index?.totalSizeMB??null,updated:index?.lastUpdated??null,d1Bytes:meta.meta?.size_after??null,d1SingleLimit:500*1024*1024,d1AccountFree:5*1024*1024*1024,hfPublicLimit:null,channel:'Hugging Face · wanxiang'},200,origin);
   }
   return json({error:'Unknown operation'},400,origin);
- }catch(error){return json({error:'上传授权或图床暂不可用，请重试'},403,origin);}
+ }catch(error){const messages={authorization:'图床未能向灯塔核对上传授权，请稍后重试或改存灯塔服务器',database:'图床数据库暂不可用，请稍后重试或改存灯塔服务器',request:'上传请求未能解析，请重新选择图片'};return json({error:messages[stage]||'图床暂不可用，请改存灯塔服务器',code:'lighthouse-'+stage},stage==='authorization'?403:503,origin);}
 }
