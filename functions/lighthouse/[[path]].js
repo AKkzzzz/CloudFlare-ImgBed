@@ -37,7 +37,12 @@ export async function onRequest(context){
  const {request,env}=context,action=new URL(request.url).pathname.split('/').pop(),origin=request.headers.get('Origin')||'*';
  if(request.method==='OPTIONS')return json({},204,origin);
  if(request.method==='GET'&&action==='health')return json({version:'lighthouse-media-v1',d1:!!env.img_d1?.prepare});
- if(request.method==='GET'&&action==='connectivity'){try{const r=await fetch(ISSUER,{method:'POST',headers:{'Content-Type':'application/json','User-Agent':'Mozilla/5.0 Lighthouse/1.0'},body:JSON.stringify({ticket:'0'.repeat(43)})}),type=r.headers.get('Content-Type')||'';return json({issuerStatus:r.status,issuerJson:type.includes('application/json'),d1:!!env.img_d1?.prepare});}catch{return json({issuerStatus:null,issuerJson:false,d1:!!env.img_d1?.prepare},503);}}
+ if(request.method==='GET'&&action==='connectivity'){
+  let issuerStatus=null,issuerJson=false,d1Ready=false;
+  try{const r=await fetch(ISSUER,{method:'POST',headers:{'Content-Type':'application/json','User-Agent':'Mozilla/5.0 Lighthouse/1.0'},body:JSON.stringify({ticket:'0'.repeat(43)})});issuerStatus=r.status;issuerJson=(r.headers.get('Content-Type')||'').includes('application/json');}catch{}
+  try{const db=await database(env);await db.prepare('SELECT 1 FROM lighthouse_uploads LIMIT 1').first();d1Ready=true;}catch{}
+  return json({issuerStatus,issuerJson,d1Ready},issuerJson&&d1Ready?200:503);
+ }
  if(request.method!=='POST')return json({error:'Method not allowed'},405,origin);
  let db,g,stage='request';
  try{
