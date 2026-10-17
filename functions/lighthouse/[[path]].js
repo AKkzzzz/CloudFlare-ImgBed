@@ -9,8 +9,11 @@ const json=(out,status=200,origin='*')=>new Response(status===204?null:JSON.stri
 async function grant(ticket,claim=false,readonly=false){
  if(typeof ticket!=='string'||!/^[-\w]{40,60}$/.test(ticket))throw Error('上传票据无效');
  const r=await fetch(ISSUER,{method:'POST',headers:{'Content-Type':'application/json','User-Agent':'Mozilla/5.0 Lighthouse/1.0'},body:JSON.stringify({ticket,claim,purpose:readonly?'status':'upload'}),redirect:'error'});
- if(!r.ok)throw Error('票据已过期或账号没有上传资格');
- const g=await r.json();if(!/^[a-f0-9]{32}$/.test(g.jti)||!/^[a-f0-9]{64}$/.test(g.sub)||(!readonly&&(g.exp<Date.now()/1000||g.day!==Math.floor((Date.now()/1000+28800)/86400))))throw Error('票据已过期');
+ if(!r.ok)throw Object.assign(Error('票据核对未通过'),{reason:'issuer-'+r.status});
+ const g=await r.json();
+ if(!/^[a-f0-9]{32}$/.test(g.jti)||!/^[a-f0-9]{64}$/.test(g.sub))throw Object.assign(Error('票据格式无效'),{reason:'grant-format'});
+ if(!readonly&&g.exp<Date.now()/1000)throw Object.assign(Error('票据已过期'),{reason:'expired'});
+ if(!readonly&&g.day!==Math.floor((Date.now()/1000+28800)/86400))throw Object.assign(Error('票据日期不一致'),{reason:'day'});
  return g;
 }
 async function database(env){
@@ -38,10 +41,10 @@ export async function onRequest(context){
  if(request.method==='OPTIONS')return json({},204,origin);
  if(request.method==='GET'&&action==='health')return json({version:'lighthouse-media-v1',d1:!!env.img_d1?.prepare});
  if(request.method==='GET'&&action==='connectivity'){
-  let issuerStatus=null,issuerJson=false,d1Ready=false;
-  try{const r=await fetch(ISSUER,{method:'POST',headers:{'Content-Type':'application/json','User-Agent':'Mozilla/5.0 Lighthouse/1.0'},body:JSON.stringify({ticket:'0'.repeat(43)})});issuerStatus=r.status;issuerJson=(r.headers.get('Content-Type')||'').includes('application/json');}catch{}
+  let issuerStatus=null,issuerJson=false,d1Ready=false,issuerMessage=null,issuerDate=null;
+  try{const r=await fetch(ISSUER,{method:'POST',headers:{'Content-Type':'application/json','User-Agent':'Mozilla/5.0 Lighthouse/1.0'},body:JSON.stringify({ticket:'0'.repeat(43)})});issuerStatus=r.status;issuerJson=(r.headers.get('Content-Type')||'').includes('application/json');issuerDate=r.headers.get('Date');if(issuerJson){const out=await r.json();if(typeof out.error==='string')issuerMessage=out.error.slice(0,100);}}catch{}
   try{const db=await database(env);await db.prepare('SELECT 1 FROM lighthouse_uploads LIMIT 1').first();d1Ready=true;}catch{}
-  return json({issuerStatus,issuerJson,d1Ready},issuerJson&&d1Ready?200:503);
+  return json({issuerStatus,issuerJson,d1Ready,issuerMessage,issuerDate,workerTime:Math.floor(Date.now()/1000)},issuerJson&&d1Ready?200:503);
  }
  if(request.method!=='POST')return json({error:'Method not allowed'},405,origin);
  let db,g,stage='request';
@@ -79,5 +82,5 @@ export async function onRequest(context){
    return json({indexed:index?.success===true,files:index?.totalCount??null,sizeMB:index?.totalSizeMB??null,updated:index?.lastUpdated??null,d1Bytes:meta.meta?.size_after??null,d1SingleLimit:500*1024*1024,d1AccountFree:5*1024*1024*1024,hfPublicLimit:null,channel:'Hugging Face · wanxiang'},200,origin);
   }
   return json({error:'Unknown operation'},400,origin);
- }catch(error){const messages={authorization:'图床未能向灯塔核对上传授权，请稍后重试或改存灯塔服务器',database:'图床数据库暂不可用，请稍后重试或改存灯塔服务器',request:'上传请求未能解析，请重新选择图片'};return json({error:messages[stage]||'图床暂不可用，请改存灯塔服务器',code:'lighthouse-'+stage},stage==='authorization'?403:503,origin);}
+ }catch(error){const messages={authorization:'图床未能向灯塔核对上传授权，请稍后重试或改存灯塔服务器',database:'图床数据库暂不可用，请稍后重试或改存灯塔服务器',request:'上传请求未能解析，请重新选择图片'};return json({error:messages[stage]||'图床暂不可用，请改存灯塔服务器',code:'lighthouse-'+stage+(error.reason?'-'+error.reason:'')},stage==='authorization'?403:503,origin);}
 }
