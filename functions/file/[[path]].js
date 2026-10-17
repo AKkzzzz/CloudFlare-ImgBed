@@ -938,6 +938,15 @@ async function handleDiscordFile(context, metadata, encodedFileName, fileType) {
 }
 
 
+// ?download=原文件名：作为附件下载（论坛里的角色卡），浏览器保存时用原来的文件名。
+function downloadAs(headers, url, encodedFileName) {
+    const wanted = url?.searchParams?.get('download');
+    if (wanted === null || wanted === undefined) return;
+    const name = String(wanted).replace(/[\u0000-\u001f\u007f"\\/]/g, '').trim().slice(0, 120);
+    headers.set('Content-Disposition', `attachment; filename="${encodedFileName}"` + (name ? `; filename*=UTF-8''${encodeURIComponent(name)}` : ''));
+    headers.set('X-Content-Type-Options', 'nosniff');
+}
+
 // 处理 HuggingFace 文件读取
 async function handleHuggingFaceFile(context, metadata, encodedFileName, fileType) {
     const { env, request, url, Referer } = context;
@@ -994,6 +1003,7 @@ async function handleHuggingFaceFile(context, metadata, encodedFileName, fileTyp
         // 构建响应头
         const headers = new Headers();
         setCommonHeaders(headers, encodedFileName, fileType, getFileCacheControl(context));
+        downloadAs(headers, url, encodedFileName);
 
         // 复制相关头部
         if (response.headers.get('Content-Length')) {
