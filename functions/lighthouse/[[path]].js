@@ -8,7 +8,7 @@ const MAX=10*1024*1024;
 const json=(out,status=200,origin='*')=>new Response(status===204?null:JSON.stringify(out),{status,headers:{'Content-Type':'application/json','Cache-Control':'no-store','Access-Control-Allow-Origin':origin,'Access-Control-Allow-Methods':'POST, OPTIONS','Access-Control-Allow-Headers':'Content-Type','Vary':'Origin'}});
 async function grant(ticket,claim=false,readonly=false){
  if(typeof ticket!=='string'||!/^[-\w]{40,60}$/.test(ticket))throw Error('上传票据无效');
- const r=await fetch(ISSUER,{method:'POST',headers:{'Content-Type':'application/json','User-Agent':'Mozilla/5.0 Lighthouse/1.0'},body:JSON.stringify({ticket,claim,purpose:readonly?'status':'upload'}),redirect:'error'});
+ const r=await fetch(ISSUER,{method:'POST',headers:{'Content-Type':'application/json','User-Agent':'Mozilla/5.0 Lighthouse/1.0'},body:JSON.stringify({ticket,claim,purpose:readonly?'status':'upload'}),redirect:'manual'});
  if(!r.ok)throw Object.assign(Error('票据核对未通过'),{reason:'issuer-'+r.status});
  const g=await r.json();
  if(!/^[a-f0-9]{32}$/.test(g.jti)||!/^[a-f0-9]{64}$/.test(g.sub))throw Object.assign(Error('票据格式无效'),{reason:'grant-format'});
@@ -41,11 +41,11 @@ export async function onRequest(context){
  if(request.method==='OPTIONS')return json({},204,origin);
  if(request.method==='GET'&&action==='health')return json({version:'lighthouse-media-v1',d1:!!env.img_d1?.prepare});
  if(request.method==='GET'&&action==='connectivity'){
-  let issuerStatus=null,issuerJson=false,d1Ready=false,issuerMessage=null,issuerDate=null,strictGrantFailure=null;
-  try{const r=await fetch(ISSUER,{method:'POST',headers:{'Content-Type':'application/json','User-Agent':'Mozilla/5.0 Lighthouse/1.0'},body:JSON.stringify({ticket:'0'.repeat(43)})});issuerStatus=r.status;issuerJson=(r.headers.get('Content-Type')||'').includes('application/json');issuerDate=r.headers.get('Date');if(issuerJson){const out=await r.json();if(typeof out.error==='string')issuerMessage=out.error.slice(0,100);}}catch{}
+  // Probe the same transport as real uploads, without a valid user capability.
+  let issuerReady=false,d1Ready=false;
+  try{await grant('0'.repeat(43));}catch(error){issuerReady=error.reason==='issuer-403';}
   try{const db=await database(env);await db.prepare('SELECT 1 FROM lighthouse_uploads LIMIT 1').first();d1Ready=true;}catch{}
-  try{await grant('0'.repeat(43));}catch(error){strictGrantFailure={name:error.name,message:String(error.message).slice(0,180),reason:error.reason||null};}
-  return json({issuerStatus,issuerJson,d1Ready,issuerMessage,issuerDate,strictGrantFailure,workerTime:Math.floor(Date.now()/1000)},issuerJson&&d1Ready?200:503);
+  return json({issuerReady,d1Ready},issuerReady&&d1Ready?200:503);
  }
  if(request.method!=='POST')return json({error:'Method not allowed'},405,origin);
  let db,g,stage='request';
