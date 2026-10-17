@@ -41,10 +41,11 @@ export async function onRequest(context){
  if(request.method==='OPTIONS')return json({},204,origin);
  if(request.method==='GET'&&action==='health')return json({version:'lighthouse-media-v1',d1:!!env.img_d1?.prepare});
  if(request.method==='GET'&&action==='connectivity'){
-  let issuerStatus=null,issuerJson=false,d1Ready=false,issuerMessage=null,issuerDate=null;
+  let issuerStatus=null,issuerJson=false,d1Ready=false,issuerMessage=null,issuerDate=null,strictGrantFailure=null;
   try{const r=await fetch(ISSUER,{method:'POST',headers:{'Content-Type':'application/json','User-Agent':'Mozilla/5.0 Lighthouse/1.0'},body:JSON.stringify({ticket:'0'.repeat(43)})});issuerStatus=r.status;issuerJson=(r.headers.get('Content-Type')||'').includes('application/json');issuerDate=r.headers.get('Date');if(issuerJson){const out=await r.json();if(typeof out.error==='string')issuerMessage=out.error.slice(0,100);}}catch{}
   try{const db=await database(env);await db.prepare('SELECT 1 FROM lighthouse_uploads LIMIT 1').first();d1Ready=true;}catch{}
-  return json({issuerStatus,issuerJson,d1Ready,issuerMessage,issuerDate,workerTime:Math.floor(Date.now()/1000)},issuerJson&&d1Ready?200:503);
+  try{await grant('0'.repeat(43));}catch(error){strictGrantFailure={name:error.name,message:String(error.message).slice(0,180),reason:error.reason||null};}
+  return json({issuerStatus,issuerJson,d1Ready,issuerMessage,issuerDate,strictGrantFailure,workerTime:Math.floor(Date.now()/1000)},issuerJson&&d1Ready?200:503);
  }
  if(request.method!=='POST')return json({error:'Method not allowed'},405,origin);
  let db,g,stage='request';
